@@ -54,7 +54,7 @@ func NewWatcher(restConfig *rest.Config) *Watcher {
 		log.Fatalf("Failed to create k8s client: %s", err)
 
 	}
-	namespace := ""
+	namespace := ""		// get workload from all namespaces
 	watchWLE, err := ic.NetworkingV1beta1().WorkloadEntries(namespace).Watch(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Fatalf("Failed to get Workload Entry watch: %v", err)
