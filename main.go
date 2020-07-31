@@ -18,8 +18,6 @@ import (
 	"log"
 	"os"
 
-	"istio.io/istio/pkg/cmd"
-
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -42,5 +40,5 @@ func main() {
 	watcher.Start(stop)
 
 	log.Println("waiting to be stopped")
-	cmd.WaitSignal(stop)
+	watcher.WaitSignal(stop)
 }

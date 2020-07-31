@@ -16,10 +16,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +42,7 @@ type Watcher struct {
 	namespace            string
 	Watch                watch.Interface
 	requiredTerminations sync.WaitGroup
+	sdFileName           string
 }
 
 func NewWatcher(restConfig *rest.Config) *Watcher {
@@ -54,7 +58,7 @@ func NewWatcher(restConfig *rest.Config) *Watcher {
 		log.Fatalf("Failed to create k8s client: %s", err)
 
 	}
-	namespace := ""		// get workload from all namespaces
+	namespace := "" // get workload from all namespaces
 	watchWLE, err := ic.NetworkingV1beta1().WorkloadEntries(namespace).Watch(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Fatalf("Failed to get Workload Entry watch: %v", err)
@@ -64,6 +68,7 @@ func NewWatcher(restConfig *rest.Config) *Watcher {
 		k8sClient:   k8sClientSet,
 		namespace:   namespace,
 		Watch:       watchWLE,
+		sdFileName:  "staticConfigurations.json",
 	}
 	log.Println("workload entry watcher created")
 	return w
@@ -74,33 +79,48 @@ func (w *Watcher) Start(stop <-chan struct{}) {
 	go func() {
 		w.requiredTerminations.Add(1)
 		for event := range w.Watch.ResultChan() {
-			fileSDConfig, err := getOrCreatePromSDConfigMap(w.k8sClient)
+			// get the static configurations
+			fileSDConfig, err := w.getOrCreatePromSDConfigMap(w.k8sClient)
 			if err != nil {
-				log.Printf("get or create config map failed: %v\n", err)
+				log.Fatalf("get or create config map failed: %v\n", err)
 			}
+			var staticConfigurations []map[string][]string
+			if err := json.Unmarshal([]byte(fileSDConfig.Data[w.sdFileName]), &staticConfigurations); err != nil {
+				log.Println("static configuration json generation failed")
+			}
+
+			// handle events from the workload entries watch
 			wle, ok := event.Object.(*v1beta1.WorkloadEntry)
 			if !ok {
 				log.Print("unexpected type")
 			}
-			wleName := createNameFromAddr(wle.Spec.Address)
-
 			switch event.Type {
 			case watch.Deleted:
 				log.Printf("handle deleted workload %s", wle.Spec.Address)
-				if fileSDConfig.Data != nil {
-					delete(fileSDConfig.Data, fmt.Sprintf("%s.yaml", wleName))
+				toDelete := 0
+			outer:
+				for i, target := range staticConfigurations {
+					for _, ip := range target["targets"] {
+						if ip == wle.Spec.Address {
+							toDelete = i
+							break outer
+						}
+					}
 				}
+				staticConfigurations = append(staticConfigurations[:toDelete], staticConfigurations[toDelete+1:]...)
 			default: // add or update
 				log.Printf("handle update workload %s", wle.Spec.Address)
-				if fileSDConfig.Data == nil {
-					fileSDConfig.Data = make(map[string]string)
-				}
-				staticConfig := `
-- targets:
-  - %s
-`
-				fileSDConfig.Data[fmt.Sprintf("%s.yaml", wleName)] = fmt.Sprintf(staticConfig, wle.Spec.Address)
+				newTarget := make(map[string][]string)
+				newTarget["targets"] = append(newTarget["targets"], fmt.Sprintf("%s:15020", wle.Spec.Address))
+				staticConfigurations = append(staticConfigurations, newTarget)
 			}
+
+			// assign the updated static configurations to the config map
+			marshaledString, err := json.Marshal(staticConfigurations)
+			if err != nil {
+				log.Printf("update static configuration json failed: %v", err)
+			}
+			fileSDConfig.Data[w.sdFileName] = string(marshaledString)
 			if err := updatePromSDConfigMap(w.k8sClient, fileSDConfig); err != nil {
 				log.Printf("update config map failed: %v\n", err)
 			}
@@ -118,11 +138,7 @@ func (w *Watcher) waitForShutdown(stop <-chan struct{}) {
 	}()
 }
 
-func createNameFromAddr(ip string) string {
-	return strings.ReplaceAll(ip, ".", "-")
-}
-
-func getOrCreatePromSDConfigMap(client *kubernetes.Clientset) (*v1.ConfigMap, error) {
+func (w *Watcher) getOrCreatePromSDConfigMap(client *kubernetes.Clientset) (*v1.ConfigMap, error) {
 	configMap, err := client.CoreV1().ConfigMaps("istio-system").
 		Get(context.TODO(), "file-sd-config", metav1.GetOptions{})
 	if err == nil {
@@ -135,11 +151,20 @@ func getOrCreatePromSDConfigMap(client *kubernetes.Clientset) (*v1.ConfigMap, er
 		},
 		Data: make(map[string]string),
 	}
+	cfg.Data[w.sdFileName] = ""
 	if configMap, err = client.CoreV1().ConfigMaps("istio-system").Create(context.TODO(), cfg,
 		metav1.CreateOptions{}); err != nil {
 		return nil, err
 	}
 	return configMap, nil
+}
+
+// WaitSignal awaits for SIGINT or SIGTERM and closes the channel
+func (w *Watcher) WaitSignal(stop chan struct{}) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	<-sigs
+	close(stop)
 }
 
 func updatePromSDConfigMap(client *kubernetes.Clientset, fileSDConfig *v1.ConfigMap) error {
