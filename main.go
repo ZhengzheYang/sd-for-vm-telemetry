@@ -15,28 +15,22 @@
 package main
 
 import (
+	"k8s.io/client-go/rest"
 	"log"
-	"os"
-
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
-	kubeConfig := os.Getenv("KUBECONFIG")
-	if len(kubeConfig) == 0 {
-		log.Fatalf("Environment variables KUBECONFIG need to be set")
-	}
-	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeConfig)
+	config, err := rest.InClusterConfig()
 	if err != nil {
-		log.Fatalf("Failed to create k8s rest client: %s", err)
+		log.Println("get in cluster configuration failed")
+		panic(err.Error())
 	}
-
 	// Create the stop channel for all of the servers.
 	stop := make(chan struct{})
 
 	// start the workload entry watcher
 	log.Println("starting new watcher for workload entries")
-	watcher := NewWatcher(restConfig)
+	watcher := NewWatcher(config)
 	watcher.Start(stop)
 
 	log.Println("waiting to be stopped")
