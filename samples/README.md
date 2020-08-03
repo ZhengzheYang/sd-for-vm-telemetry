@@ -7,7 +7,7 @@ you want to mount the config map to.
 In the sample, we mount to /etc/file_sd, but this could
 be your choice. However, `file-sd-config` is a pre-compiled
 config map name and should not be changed if you are going
-to use the provided container. You could use other names
+to use the provided Docker image. You could use other names
 if you change the part of the code where we name
 the config map, re-build the binary and host your
 own Docker image.
@@ -42,7 +42,7 @@ will be kept.
     target_label: __metrics_path__
 ```
 ## Deploy the Sidecar
-Deploy the Docker image hosted on [Docker hub](https://hub.docker.com/repository/docker/jackyzz/vm-discovery).
+Deploy the Docker image hosted on [Docker hub](https://hub.docker.com/repository/docker/jackyzz/vm-discovery) as a sidecar.
 You could build the binary from source and host your own docker image. 
 ```yaml
 containers:
@@ -53,8 +53,8 @@ containers:
 
 ### Add Cluster Role to Prometheus 
 In order for the Prometheus to read workload entries and
-update the config map, we need to add cluster role to the
-prometheus configuration. We need get, watch and list for
+update the config map, we need to add cluster roles to the
+prometheus configuration. We need `get`, `watch` and `list` for
 workload entries, and write access to config maps.
 ```yaml
 - apiGroups:
